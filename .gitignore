@@ -1,0 +1,11 @@
+.godot/
+.import/
+export.cfg
+build/
+server/node_modules/
+server/data/accounts.json
+server/data/*.tmp
+.env
+*.keystore
+*.jks
+.DS_Store
