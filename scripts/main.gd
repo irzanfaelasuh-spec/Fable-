@@ -338,7 +338,7 @@ func _make_line_edit(parent: Node, placeholder: String, secret: bool = false) ->
 func _show_auth(mode: String) -> void:
 	current_screen = "auth"
 	auth_mode = mode
-	var stack := _make_panel("ACCOUNT ACCESS", "Create a new identity or sign in to continue.", Vector2(900, 590))
+	var stack := _make_panel("LOCAL ACCOUNT", "Akun disimpan di perangkat ini. Tidak perlu server atau internet.", Vector2(900, 590))
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	row.add_theme_constant_override("separation", 28)
@@ -354,7 +354,7 @@ func _show_auth(mode: String) -> void:
 	var brand_title := _make_label("FABLEBRINK", 22, UI_TEXT)
 	brand_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	brand.add_child(brand_title)
-	var brand_note := _make_label("A small world can hold\na very long adventure.", 13, UI_MUTED)
+	var brand_note := _make_label("Your world. Your pace.\nYour own adventure.", 13, UI_MUTED)
 	brand_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	brand.add_child(brand_note)
 	var form := VBoxContainer.new()
@@ -374,29 +374,42 @@ func _show_auth(mode: String) -> void:
 		auth_confirm = _make_line_edit(form, "Repeat your password", true)
 	else:
 		auth_confirm = null
-	form.add_child(_make_label("SERVER ADDRESS", 11, UI_MUTED))
-	auth_server = _make_line_edit(form, "wss://your-server.example/ws")
-	auth_server.text = server_url
+	auth_server = null
 	auth_status = _make_label("", 12, UI_MUTED)
 	form.add_child(auth_status)
-	var submit_text := "CREATE ACCOUNT" if auth_mode == "create" else "LOGIN"
+	var submit_text := "CREATE LOCAL ACCOUNT" if auth_mode == "create" else "LOGIN"
 	form.add_child(_make_button(submit_text, _submit_auth, 50))
-	var footer := _make_label("Usernames are unique. Passwords are protected on the server.", 10, UI_MUTED)
-	form.add_child(footer)
+	form.add_child(_make_label("Offline profile · saved on this device only", 10, UI_MUTED))
 	if auth_mode == "create":
 		auth_confirm.grab_focus()
 	else:
 		auth_username.grab_focus()
 
+func _load_local_accounts() -> Dictionary:
+	if not FileAccess.file_exists("user://accounts.json"):
+		return {}
+	var file := FileAccess.open("user://accounts.json", FileAccess.READ)
+	if file == null:
+		return {}
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	if parsed is Dictionary:
+		return parsed
+	return {}
+
+func _save_local_accounts(accounts: Dictionary) -> void:
+	var file := FileAccess.open("user://accounts.json", FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(accounts, "\t"))
+
+func _password_digest(salt: String, password: String) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update((salt + password).to_utf8_buffer())
+	return context.finish().hex_encode()
+
 func _submit_auth() -> void:
 	var username := auth_username.text.strip_edges()
 	var password := auth_password.text
-	server_url = auth_server.text.strip_edges()
-	_save_settings()
-	if not (server_url.begins_with("wss://") or server_url.begins_with("ws://")):
-		auth_status.text = "Masukkan alamat WebSocket server yang valid."
-		auth_status.add_theme_color_override("font_color", UI_DANGER)
-		return
 	var username_rule := RegEx.new()
 	username_rule.compile("^[A-Za-z0-9_]{3,16}$")
 	if username_rule.search(username) == null:
@@ -407,14 +420,38 @@ func _submit_auth() -> void:
 		auth_status.text = "Password minimal 8 karakter."
 		auth_status.add_theme_color_override("font_color", UI_DANGER)
 		return
-	if auth_mode == "create" and (auth_confirm == null or auth_confirm.text != password):
-		auth_status.text = "Konfirmasi password tidak cocok."
-		auth_status.add_theme_color_override("font_color", UI_DANGER)
-		return
-	pending_auth = {"type": "register" if auth_mode == "create" else "login", "username": username, "password": password}
-	auth_status.text = "Menghubungkan ke server..."
-	auth_status.add_theme_color_override("font_color", UI_ACCENT)
-	network.connect_to_server(server_url)
+	if auth_mode == "create":
+		if auth_confirm == null or auth_confirm.text != password:
+			auth_status.text = "Konfirmasi password tidak cocok."
+			auth_status.add_theme_color_override("font_color", UI_DANGER)
+			return
+	var accounts := _load_local_accounts()
+	var account_key := username.to_lower()
+	if auth_mode == "create":
+		if accounts.has(account_key):
+			auth_status.text = "Username sudah digunakan di perangkat ini."
+			auth_status.add_theme_color_override("font_color", UI_DANGER)
+			return
+		var salt := str(randi()) + "_" + str(Time.get_ticks_usec())
+		accounts[account_key] = {"username": username, "salt": salt, "password_hash": _password_digest(salt, password)}
+		_save_local_accounts(accounts)
+	else:
+		if not accounts.has(account_key):
+			auth_status.text = "Akun tidak ditemukan. Pilih CREATE ACCOUNT."
+			auth_status.add_theme_color_override("font_color", UI_DANGER)
+			return
+		var account: Dictionary = accounts[account_key]
+		var salt := str(account.get("salt", ""))
+		var saved_hash := str(account.get("password_hash", ""))
+		if _password_digest(salt, password) != saved_hash:
+			auth_status.text = "Password salah."
+			auth_status.add_theme_color_override("font_color", UI_DANGER)
+			return
+		username = str(account.get("username", username))
+	current_username = username
+	current_player_id = "local_" + account_key
+	pending_auth.clear()
+	_show_menu()
 
 func _on_network_connected() -> void:
 	if not pending_auth.is_empty():
@@ -545,7 +582,9 @@ func _show_menu() -> void:
 	right.add_theme_constant_override("separation", 11)
 	body.add_child(right)
 	right.add_child(_make_button("PLAY  /  SINGLEPLAYER", _show_world_select, 54))
-	right.add_child(_make_button("MULTIPLAYER", _show_multiplayer, 54))
+	var multiplayer_button := _make_button("MULTIPLAYER · COMING SOON", _show_multiplayer, 54)
+	multiplayer_button.disabled = true
+	right.add_child(multiplayer_button)
 	right.add_child(_make_button("SETTINGS", _show_settings, 44))
 	right.add_child(_make_button("ABOUT", _show_about, 44))
 	right.add_child(_make_button("LOG OUT", _logout, 42))
@@ -711,8 +750,6 @@ func _show_about() -> void:
 	stack.add_child(_make_button("BACK", _show_menu, 44))
 
 func _logout() -> void:
-	if network.is_connected_to_server():
-		network.send_data({"type": "logout"})
 	current_username = ""
 	current_player_id = ""
 	_show_auth("login")
